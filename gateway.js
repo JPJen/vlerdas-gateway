@@ -23,6 +23,7 @@ var numCPUs = require('os').cpus().length;
 var Path = require('path'), 
     os;
 var winston = require('winston');
+var moment = require('moment');
 // initialize the logger instance
 var logger = getLogger();
 module.exports.logger = logger;
@@ -210,7 +211,10 @@ var authorizeHMAC = function (req) {
 // define routing 'handler' function to handle gateway request processing
 var handler = function (req, res) {
 	logger.info("Received gateway request, where gateway request has method: "+req.method+", host: "+req.headers.host+", and URL: "+req.url);
-		
+	
+	var reqDateTime = moment().format();
+	var resDateTime = '';
+	
 	// set the request transaction id as a UUID and set into req
     req.transactionId = uuid.v4();
     
@@ -357,9 +361,10 @@ var handler = function (req, res) {
                         	// and release the socket from this request
                         	// Note: called once a socket is assigned to this request and is connected, 
                         	// and no activity occurs on socket for the timeout length
+                        	// Note: auditing will occur below in proxy_client 'error' event handler
                             proxy_client.setTimeout(route.timeout, function () {
 								// Note: if streaming to client has started, this writeHead call will have no effect.
-                            	logger.trace('gateway experienced a proxy request time-out to route: '+route.host+':'+route.port+''+req.parsedUrl.path+', returning 504/Gateway Timeout gateway response');                            	  
+                            	logger.error('gateway experienced a proxy request time-out event to route: '+route.host+':'+route.port+''+req.parsedUrl.path+', returning 504/Gateway Timeout gateway response');                            	  
                                 res.writeHead(504, 'Gateway Timeout',{
                                     'Content-Type' : 'text/plain'
                                 });
@@ -397,6 +402,7 @@ var handler = function (req, res) {
 	                    		res.write('There was a communication error with upstream server.');
 	                    		res.end('HTTP 1.1 500/Internal Server Error');
                     		}
+                    		resDateTime = moment().format();
                     	}
                         // audit the gateway response to the proxy request error:
                     	// perform gateway request, gateway response, proxy error response structured audit logging if config set
@@ -404,7 +410,7 @@ var handler = function (req, res) {
                         	logger.trace('Auditing gateway request and response (and proxy client\'s request error)');
                         	logger.trace('res.statusCode:',res.statusCode);
                         	logger.trace("res.headers:",res.headers);
-                            audit(route.audit.structured.options, req, res, '', err, function(auditRes) {});
+                            audit(route.audit.structured.options, req, res, '', reqDateTime, resDateTime, err, function(auditRes) {});
                         }
                         // if file buffering set for this configured route                                         
                         if (route.buffer) {
@@ -534,6 +540,7 @@ var handler = function (req, res) {
                                         'Content-Type' : 'text/plain'
                                     });
                                     res.end('HTTP 1.1 500/Internal Server Error: HTTP Header Content-Length value does not match received file size.');
+                                    resDateTime = moment().format();
                                     errState = true;
                                 }
                             }
@@ -557,12 +564,13 @@ var handler = function (req, res) {
                                 if (!errState) {
                                 	// mark the gateway response as complete
                                     res.end();
+                                    resDateTime = moment().format();
                                 }
                             }
                             // perform gateway request, gateway response, proxy response structured audit logging if config set
                             if (route.audit && route.audit.structured && route.audit.structured.auditRequestResponse) {
                             	logger.trace('Auditing gateway request and response (and proxy client\'s proxyRes)');//, req, res);
-                                audit(route.audit.structured.options, req, res, proxyRes, '', function(auditRes) {});
+                                audit(route.audit.structured.options, req, res, proxyRes, reqDateTime, resDateTime, '', function(auditRes) {});
                             }
                         });
 
@@ -574,6 +582,7 @@ var handler = function (req, res) {
                                 'Content-Type' : 'text/plain'
                             });
                             res.end('HTTP 1.1 500/Internal Server Error');
+                            resDateTime = moment().format();
                             // stop unstructured audit logging of proxy response attachment received if occurring 
                             if (isResAuditInitialized && !_.isUndefined(responseAttachmentAudit)) {
                                 logger.trace('End response chunk write to Audit, where error: ' + e);                                
@@ -584,7 +593,7 @@ var handler = function (req, res) {
                             // perform gateway request, gateway response, proxy response, and proxy response processing error structured audit logging if config set
                             if (route.audit && route.audit.structured && route.audit.structured.auditRequestResponse) {
 								logger.trace('Auditing gateway request and response (and proxy client\'s proxyRes, and proxy client\'s error)');//, req, res);  
-                                audit(route.audit.structured.options, req, res, proxyRes, e, function(auditRes) {});
+                                audit(route.audit.structured.options, req, res, proxyRes, reqDateTime, resDateTime, e, function(auditRes) {});
                             }
                             // if file buffering set for this configured route
                             if (route.buffer) {
@@ -651,8 +660,22 @@ var handler = function (req, res) {
                         // stop the proxy_client
                         proxy_client.end();
                     });
-
-					// handle error experienced when processing gateway request body (when present)
+                    
+                    // set the socket timeout value and listener to be the same as the server timeout, 
+                    // for timeout after request assigned to socket (i.e. no data activity)
+                    req.socket.setTimeout(config.server.timeout);
+                    req.socket.removeAllListeners('timeout'); 
+                    req.socket.on('timeout', function () {
+                		logger.info('The gateway request.socket experienced a timeout from the caller.');
+                        // if streaming to client has started, the writeHead will have no effect.    
+                		logger.trace('Returning 504/Gateway Timeout gateway response'); 
+                		res.writeHead(504, 'Gateway Timeout');
+                		res.end('The gateway request.socket experienced a timeout from the caller.');
+                		resDateTime = moment().format();
+                		req.socket.destroy();
+                    });
+                   
+                    // handle error experienced when processing gateway request body (when present)
                     req.on('error', function (e) {
                         logger.error('Problem with gateway request, request error event emitted: ', e);
                         // stop unstructured audit logging of gateway request body if happening
@@ -668,7 +691,8 @@ var handler = function (req, res) {
                         res.writeHead(500, 'Internal Server Error', {
                             'Content-Type' : 'text/plain'
                         });
-                        res.end('HTTP 1.1 500/Internal Server Error');   
+                        res.end('HTTP 1.1 500/Internal Server Error');  
+                        resDateTime = moment().format();
                     });
                     // have matched the request path to a configured route, so exit the 'for' loop
                     break;
@@ -827,14 +851,14 @@ for (var i = 0; i < config.routes.length; i++) {
 
 // define connect middleware
 var app = connect();
+//enable the X-Response-Time to be calculated and set in all gateway responses
+app.use(connect.responseTime());
 // create stream object to redirect connect.logger into Winston.logger instead of stdout
 var winstonStream = {
 	    write: function(message, encoding){
 	        logger.info(message);
 	    }
 	};
-// enable the X-Response-Time to be calculated and set in all gateway responses
-app.use(connect.responseTime());
 // set the connect Logger and redirect into winston logger with this format
 app.use(connect.logger({stream:winstonStream, format:'"To Remote-Addr:" :remote-addr "For Req.Host:" :req[host] "For Req:" :method :url HTTP/:http-version "Req.Accept:" :req[Accept] "Res.Content-Type:" :res[Content-Type] "Res.Status:" :status "Res.Content-Length:" :res[Content-Length] bytes "Referer:" :referrer "User-Agent:" :user-agent "Gateway Response Time:" :response-time ms'}));
 // set the 'handler' function
@@ -864,20 +888,41 @@ if (cluster.isMaster) {
     });
 } else {
 	// this is a cluster worker, so initialize http/https server instance(s) 
-	// from config options using connect 'app' middleware with 'handler' function set
+	// from config options using connect 'app' middleware with 'handler' function set	
     var httpsServer;
     if (config.secureServer) {
-    	httpsServer = https.createServer(options.https, app).listen(config.secureServer.port, config.secureServer.host, function () {
+    	// set httpsServer
+    	httpsServer = https.createServer(options.https, app);
+    	httpsServer.on('connection', function (socket) {
+    		logger.trace('httpsServer received a connection event!'); 
+    		socket.setTimeout(config.secureServer.timeout, function() {
+    			logger.info('The gateway httpsServer experienced a timeout from the caller.');
+    			socket.destroy();
+    		});
+    		logger.trace('httpsServer timeout set at: '+config.secureServer.timeout+' ms.');
+    	 });
+    	httpsServer.listen(config.secureServer.port, config.secureServer.host, function () {
            logger.info("Gateway listening on Secure Port: ", config.secureServer.port, " Host: ", config.secureServer.host);
     	});
     }
-    var httpServer = http.createServer(app).listen(config.server.port, config.server.host, function () {
+    // set httpServer
+    var httpServer = http.createServer(app);
+	httpServer.setTimeout(config.server.timeout, function(socket) {
+		logger.info('The gateway httpServer experienced a timeout from the caller. Destroying socket....');
+        socket.destroy();
+    });
+	logger.trace('httpServer timeout set at: '+config.server.timeout+' ms.'); 
+	httpServer.on('connection', function (socket) {
+		logger.trace('httpServer received a connection event!'); 
+		
+	 });	
+    httpServer.listen(config.server.port, config.server.host, function () {
        logger.info("Gateway listening on Port: ", config.server.port, " Host: ", config.server.host);
     });   
 }
 
 // define the structured audit logging function
-function audit(options, req, res, proxyRes, err, callback) {
+function audit(options, req, res, proxyRes, reqDateTime, resDateTime, err, callback) {
     var auditService = http.request(options, function(auditRes) {
         auditRes.on('data', function(chunk) {
             logger.trace('Write to audit client, with chunk length: ', chunk.length);
@@ -895,6 +940,8 @@ function audit(options, req, res, proxyRes, err, callback) {
     req = req ? req : {};
     res = res ? res : {};    
     proxyRes = proxyRes ? proxyRes : {};
+    reqDateTime = reqDateTime ? reqDateTime : {};
+    resDateTime = resDateTime ? resDateTime : {};
     
     // normalize the err into JSON to avoid cyclical 
     // JSON object conversion errors and ecrud audit storage errors
@@ -914,6 +961,7 @@ function audit(options, req, res, proxyRes, err, callback) {
     audit.req.trailers = req.trailers;
     audit.req.remoteAddress = req.connection.remoteAddress;
     audit.req.key = req.key;
+    audit.req.datetime = reqDateTime;
 
     audit.res = {};
     if(!res.headers) {
@@ -923,6 +971,7 @@ function audit(options, req, res, proxyRes, err, callback) {
     }    
     audit.res.statusCode = res.statusCode;
     audit.res.key = res.key;
+    audit.res.datetime = resDateTime;
     
     audit.res.err = error;
 

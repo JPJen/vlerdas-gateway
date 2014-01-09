@@ -1,11 +1,13 @@
 {
     "server" : {
         "port" : 8000,
-        "host" : "localhost"
+        "host" : "localhost",
+        "timeout" : 1200000
     },
     "secureServer" : {
         "port" : 8443,
         "host" : "127.0.0.1",
+        "timeout" : 1200000,
         "options" : {
             "https" : {
                 "key" : "config/das.dynalias.org_privatekey.pem",
@@ -18,22 +20,36 @@
             }
         }
     },
-    "accessControl.DISABLED" : {
+    "useClientCertAuth.DISABLED" : {
+    	"das.dynalias.org" : {
+            "name" : "JulianJewel",            
+            "allowMethods" : "GET, POST",
+            "allowRoutes" : ["/ping","/lens/v1","/ecrud/v1/core"]
+        },
+        "www.shmoedomain.com" : {
+            "name" : "JoeShmoe",            
+            "allowMethods" : "GET",
+            "allowRoutes" : ["/ping","/lens/v1"]
+        }
+    },
+    "useHMACAuth.DISABLED" : {
         "testuser1" : {
             "accessKeyId" : "testuser1",
             "accessKeySecret" : "pa$$w0rd1",
-            "allowMethods" : "*"
+            "allowMethods" : "*",
+            "allowRoutes" : ["/ping","/lens/v1","/ecrud/v1/core"]
         },
         "testuser2" : {
             "accessKeyId" : "testuser2",
             "accessKeySecret" : "pa$$w0rd2",
-            "allowMethods" : "POST"
+            "allowMethods" : "POST",
+            "allowRoutes" : ["/ping","/lens/v1"]
         }
-    },
+    },  
     "ofuda" : {
         "headerPrefix" : "Amz",
         "hash" : "sha1",
-        "serviceLabel" : "AWS",
+        "serviceLabel" : "VLER",
         "debug" : false
     },
     "routes" :
@@ -104,16 +120,6 @@
                             "auditResponse" : true
                         }
                     }
-                }
-            ]
-        }, {
-            "path" : "/pdfs",
-            "options" : [{
-                    "host" : "localhost",
-                    "port" : "80",
-                    "xforward" : true,
-                    "changeOrgin" : false,
-                    "timeout" : 120000 
                 }
             ]
         }

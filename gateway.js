@@ -738,7 +738,7 @@ function getExtension(type) {
 }
 
 function getContentType(req) {
-    var type = req.headers["content-type"] ? req.headers["content-type"] : "application/octlet-stream";
+    var type = req.headers["content-type"] ? req.headers["content-type"] : "application/octet-stream";
     logger.trace('Getting type value from content-type in req.headers: ', req.headers["content-type"], ' type:' + type);
     return type;
 }

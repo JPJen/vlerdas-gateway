@@ -2,7 +2,7 @@ var connect = require("connect");
 var config = require('config');
 var _ = require('underscore');
 var mime = require('mime');
-var util = require('util')
+var util = require('util');
 var S = require('string');
 // Note: included so url.parse will use 
 // this to parse the gateway request query string 
@@ -206,17 +206,17 @@ var authorizeHMAC = function (req) {
     	// HMAC authorization for request succeeded
     	return null;
     }
-}
+};
 
 // define routing 'handler' function to handle gateway request processing
 var handler = function (req, res) {
-	logger.info("Received gateway request, where gateway request has method: "+req.method+", host: "+req.headers.host+", and URL: "+req.url);
-	
-	var reqDateTime = moment().format();
-	var resDateTime = '';
-	
 	// set the request transaction id as a UUID and set into req
     req.transactionId = uuid.v4();
+    
+	logger.info(req.transactionId+"-Received gateway request, where gateway request has method: "+req.method+", host: "+req.headers.host+", and URL: "+req.url);
+	
+	var reqDateTime = moment().format();
+	var resDateTime = '';	
     
     // use the request transaction ID to set the temp file 'path' for buffering if needed 
     var path = Path.join(getTempDir(), req.transactionId);
@@ -224,24 +224,30 @@ var handler = function (req, res) {
     // parse the request URL and place the parsed elements into req   
     if (req.headers && req.headers.host) {    	
     	// put the protocol and hostname into parsed url
-    	var protocol;
-	    if(req.connection.encrypted) {
-	    	protocol = "https://";
+    	var protocol = "";
+    	if(!S(req.url).contains('http')) {
+    		// add protocol and host/port if not there in req.url
+		    if(req.connection.encrypted) {
+		    	protocol = "https://";
+		    } else {
+		    	protocol = "http://";
+		    }
+		    req.parsedUrl = url.parse(protocol + req.headers.host + req.url, true);
 	    } else {
-	    	protocol = "http://";
+	    	// http(s) is already in req.url, so don't add anything
+	    	req.parsedUrl = url.parse(req.url, true);
 	    }
-	    req.parsedUrl = url.parse(protocol + req.headers.host + req.url, true);
     } else {
     	// no host header, so do without
     	req.parsedUrl = url.parse(req.url, true);
     }
-	logger.trace("Parsed gateway request URL:", req.parsedUrl); 
+	logger.trace(req.transactionId+"-Parsed gateway request URL:", req.parsedUrl); 
 	
 	var isRequestorAuthorized = false;
 	// attempt authorization using 2-way SSL/TLS client certificate Subject Common Name value
 	var authErr;
 	if(config.useClientCertAuth) {
-		logger.trace("Checking client SSL/TLS certificate authorization for requestor, method, and URL path..."); 		
+		logger.trace(req.transactionId+"-Checking client SSL/TLS certificate authorization for requestor, method, and URL path..."); 		
     	// use 2-way SSL/TLS Client Certificate Received Authentication/Authorization
     	// - NOTE: SSL/TLS encryption must be present for the req, and a valid client cert received and validated at the Transport level already
 		authErr = authorizeClientCertSubject(req);
@@ -255,25 +261,24 @@ var handler = function (req, res) {
 				authErr = null;
 			}
 		}
-		logger.trace("isRequestorAuthorized from 2-way client cert:",isRequestorAuthorized);
+		logger.trace(req.transactionId+"-isRequestorAuthorized from 2-way client cert:",isRequestorAuthorized);
     }	
 	
 	// if needed, attempt authorization using HMAC Authentication/Source Name Authorization
 	if (!isRequestorAuthorized && config.useHMACAuth) {
-    	logger.trace("Checking HMAC authorization for requestor, method, and URL path..."); 
+    	logger.trace(req.transactionId+"-Checking HMAC authorization for requestor, method, and URL path..."); 
     	authErr = authorizeHMAC(req);
     	if(!authErr) {
 			// is authorized - flag true and do nothing! 				
 			isRequestorAuthorized = true;
 		}
-    	logger.trace("isRequestorAuthorized from HMAC:",isRequestorAuthorized);
+    	logger.trace(req.transactionId+"-isRequestorAuthorized from HMAC:",isRequestorAuthorized);
     } 	
 	
 	// if either authorization enabled, and an error exists 
 	if((config.useClientCertAuth || config.useHMACAuth) && authErr) {	
 		// output authorization error gateway response
-	    logger.trace('Authentication failed:',authErr.message);
-        logger.trace('Returning statusCode='+authErr.status+' error gateway response');
+	    logger.trace(req.transactionId+'-Authentication failed:',authErr.message+', returning statusCode='+authErr.status+' error gateway response');
         res.writeHead(authErr.status, {
             'Content-Type' : 'text/plain'
         });
@@ -288,9 +293,8 @@ var handler = function (req, res) {
 	}
 
     // ignore favicon request
-    if (req.url === '/favicon.ico') {
-        logger.trace('Favicon requested');        
-        logger.trace('Returning 200/Success gateway response to ignore favicon.ico gateway request');
+    if (req.url === '/favicon.ico') {       
+        logger.trace(req.transactionId+'-\'Favicon\' requested: returning 200/Success gateway response to ignore favicon.ico gateway request');
         res.writeHead(200, {
             'Content-Type' : 'image/x-icon'
         });
@@ -300,18 +304,18 @@ var handler = function (req, res) {
 
     // if not a ping request or a path-less request
     if (!_.isUndefined(req.parsedUrl.pathname) && !(S(req.parsedUrl.path).contains('ping') || S(req.parsedUrl.path).contains('PING'))) {
-		logger.trace("Attempting to route gateway request..."); 
+		logger.trace(req.transactionId+"-Attempting to route gateway request..."); 
 		// loop through configure routes in config file, and process proxy request if a match is made to the given gateway request path
         var i;
         for (i = 0; i < config.routes.length; i++) {
             if (!_.isUndefined(req.parsedUrl.pathname)) {
                 if (S(req.parsedUrl.pathname).contains(config.routes[i].path)) {
-                    logger.trace("Matched req.path received to configured routing path, which contains: " + config.routes[i].path);
-                	logger.trace("Routing to: " + JSON.stringify(config.routes[i].options), req.parsedUrl.pathname);
+                    logger.trace(req.transactionId+"-Matched req.path received to configured routing path, which contains: " + config.routes[i].path);
+                	logger.trace(req.transactionId+"-Routing to: " + JSON.stringify(config.routes[i].options), req.parsedUrl.pathname);
                 	
                 	// throw error if configured route is not defined properly in config file
                     if (_.isUndefined(config.routes[i].options)) {
-                        throw new Error("Route's \'options\' has to be defined in configuration file!");
+                        throw new Error(req.transactionId+"-Route's \'options\' object has to be defined in configuration file!");
                     }
                     
                     // handle load-balancing if needed
@@ -354,9 +358,9 @@ var handler = function (req, res) {
                     
                     // handle the 'socket' event, which is emitted after a socket is assigned to this request from the socket pool by the Agent
                     proxy_client.on('socket', function (socket) {
-                    	logger.trace("proxy client on socket event thrown...");
+                    	logger.trace(req.transactionId+"-proxy client on socket event thrown...");
                         if (!_.isUndefined(route.timeout)) {
-                        	logger.trace("setting route.timeout to: "+route.timeout);
+                        	logger.trace(req.transactionId+"-setting route.timeout to: "+route.timeout);
                         	// set the explicitly defined timeout, and return a 504 response if the timeout occurs, 
                         	// and release the socket from this request
                         	// Note: called once a socket is assigned to this request and is connected, 
@@ -364,7 +368,7 @@ var handler = function (req, res) {
                         	// Note: auditing will occur below in proxy_client 'error' event handler
                             proxy_client.setTimeout(route.timeout, function () {
 								// Note: if streaming to client has started, this writeHead call will have no effect.
-                            	logger.error('gateway experienced a proxy request time-out event to route: '+route.host+':'+route.port+''+req.parsedUrl.path+', returning 504/Gateway Timeout gateway response');                            	  
+                            	logger.error(req.transactionId+'-Gateway experienced a proxy request time-out event to route: '+route.host+':'+route.port+''+req.parsedUrl.path+', returning 504/Gateway Timeout gateway response');                            	  
                                 res.writeHead(504, 'Gateway Timeout',{
                                     'Content-Type' : 'text/plain'
                                 });
@@ -383,9 +387,9 @@ var handler = function (req, res) {
                     proxy_client.on('error', function (err) {
                     	if (res.headersSent) {
                     		// assume response was already sent elsewhere, e.g. Gateway Timeout
-                    		logger.trace('error event: but already returned a gateway response');                        
+                    		logger.trace(req.transactionId+'-error event: but already returned a gateway response');                        
                     	} else {
-                    		logger.error('proxy client request error event emitted!, where error: '+err.stack);
+                    		logger.error(req.transactionId+'-Proxy client request error event emitted!, where error: '+err.stack);
                     		if (S(err.message).contains('ECONNREFUSED')) {
                     			// return 503 Service Unavailable, since proxy client is most likely unable to connect to route's host                    			
                     			res.writeHead(503, 'Service Unavailable',{
@@ -393,8 +397,7 @@ var handler = function (req, res) {
                                 });
 	                    		res.write('There was a communication error with upstream server.');
 	                    		res.end('HTTP 1.1 503/Service Unavailable');                 		
-                    		} else {                    		
-	                            // Note: if streaming to proxy client has started then writeHead call will have no effect.
+                    		} else { 
 	                        	// return default error gateway response                     		
 	                    		res.writeHead(500, 'Internal Server Error', {
 	                                'Content-Type' : 'text/plain'
@@ -407,9 +410,7 @@ var handler = function (req, res) {
                         // audit the gateway response to the proxy request error:
                     	// perform gateway request, gateway response, proxy error response structured audit logging if config set
                         if (route.audit && route.audit.structured && route.audit.structured.auditRequestResponse) {
-                        	logger.trace('Auditing gateway request and response (and proxy client\'s request error)');
-                        	logger.trace('res.statusCode:',res.statusCode);
-                        	logger.trace("res.headers:",res.headers);
+                        	logger.trace('Auditing gateway request and response (and proxy client\'s request error)','res.statusCode:',res.statusCode,'res.headers:',res.headers);
                             audit(route.audit.structured.options, req, res, '', reqDateTime, resDateTime, err, function(auditRes) {});
                         }
                         // if file buffering set for this configured route                                         
@@ -417,9 +418,9 @@ var handler = function (req, res) {
                             // release the tmp file in the tmp directory                           
                         	fs.exists(path, function (exists) {
                         		if (exists) {
-                        			fs.unlink(path, function (err) { 
-                                    	if(err) {
-                                    		logger.error('Could not unlink file:' + path + ", where error: ",err);
+                        			fs.unlink(path, function (er) { 
+                                    	if(er) {
+                                    		logger.error('Could not unlink file:' + path + ", where error: ",er);
                                     	}
                                     });
                         		}                        		  
@@ -427,15 +428,15 @@ var handler = function (req, res) {
                         }
                     });
 
-                    logger.trace("Initiating proxy request with options: \n", util.inspect(options)); 
+                    logger.trace(req.transactionId+"-Initiating proxy request with options: \n", util.inspect(options)); 
 
 					// define the proxy_client's response-handler callback method
                     // Note: proxyRes is an instance of type http.IncomingMessage
                     function processRes(proxyRes) {
-						logger.trace('Handling proxy response received, for proxy request sent with options: ', options); 
+						logger.trace(req.transactionId+'-Handling proxy response received, for proxy request sent with options: ', options); 
                     	
                     	var proxyResponseStatusCode = proxyRes.statusCode;
-                    	logger.trace('proxy client request returned proxy response statusCode: ', proxyResponseStatusCode); 
+                    	logger.trace(req.transactionId+'-proxy client request returned proxy response statusCode: ', proxyResponseStatusCode); 
                     	
                         var responseAttachmentAudit;
                         var isResAuditInitialized = false;
@@ -465,7 +466,7 @@ var handler = function (req, res) {
 
 						// handle proxy client response body when present
                         proxyRes.on('data', function (chunk) {
-                            logger.trace('Response data is being written to client, where chunk length (in bytes): ', chunk.length);
+                            logger.trace(req.transactionId+'-Response data is being written to client, where chunk length (in bytes): ', chunk.length);
                         	//logger.trace('Data:', chunk.toString('utf8'));
                         	
                         	// first time - initialize and perform unstructured audit logging of the proxy response body file if config set
@@ -526,12 +527,12 @@ var handler = function (req, res) {
                                 logger.trace('End chunk write to Audit');//:', endAttachmentText);
                                 responseAttachmentAudit.end(endAttachmentText);
                             }
-                            logger.trace('End response chunk write to client, returning gateway response from proxy client');       
+                            logger.trace(req.transactionId+'-End response chunk write to client, returning gateway response from proxy client');       
 
                             var errState = false;
                             // if file length verification is set for this configured route
                             if (route.strictLength) {
-                            	logger.trace('Received file length comparison - Received HTTP header Content-Length value:' + fileSize + ' bytes, received actual file UploadedSize:' + uploadedSize + ' bytes');
+                            	logger.trace(req.transactionId+'-Received file length comparison - Received HTTP header Content-Length value:' + fileSize + ' bytes, received actual file UploadedSize:' + uploadedSize + ' bytes');
                             	// if HTTP header Content-Length value does not match the actual file size received 
                                 if (fileSize != uploadedSize) {
                                 	// return an error gateway response, set errState to true
@@ -575,9 +576,9 @@ var handler = function (req, res) {
                         });
 
 						// handle error experienced when processing proxy client response body (when present)
-                        proxyRes.on('error', function (e) {
-                            logger.error('Error emitted from proxy client request attempt, where error: ', e);
-							logger.trace('Returning 500/Internal Server Error gateway response due to proxy client error');
+                        proxyRes.on('error', function (err) {
+                            logger.error(req.transactionId+'-Error emitted from proxy client response processing, where error: ', err);
+							logger.trace(req.transactionId+'-Returning 500/Internal Server Error gateway response due to proxy client response processing error');
 							res.writeHead(500, 'Internal Server Error', {
                                 'Content-Type' : 'text/plain'
                             });
@@ -585,22 +586,22 @@ var handler = function (req, res) {
                             resDateTime = moment().format();
                             // stop unstructured audit logging of proxy response attachment received if occurring 
                             if (isResAuditInitialized && !_.isUndefined(responseAttachmentAudit)) {
-                                logger.trace('End response chunk write to Audit, where error: ' + e);                                
+                                logger.trace('End response chunk write to Audit, where error:', err);                                
                             	logger.trace('End response chunk write to Audit');//: ', endAttachmentText);   
                                 var endAttachmentText = getEndAttachment(res.key);
                                 responseAttachmentAudit.end(endAttachmentText);
                             }
                             // perform gateway request, gateway response, proxy response, and proxy response processing error structured audit logging if config set
                             if (route.audit && route.audit.structured && route.audit.structured.auditRequestResponse) {
-								logger.trace('Auditing gateway request and response (and proxy client\'s proxyRes, and proxy client\'s error)');//, req, res);  
-                                audit(route.audit.structured.options, req, res, proxyRes, reqDateTime, resDateTime, e, function(auditRes) {});
+								logger.trace('Auditing gateway request and response (and proxy client\'s proxyRes, and proxy client\'s response processing error)');//, req, res);  
+                                audit(route.audit.structured.options, req, res, proxyRes, reqDateTime, resDateTime, err, function(auditRes) {});
                             }
                             // if file buffering set for this configured route
                             if (route.buffer) {
                             	// release the tmp file in the tmp directory
-                            	fs.unlink(path, function (err) { 
-                                    if(err) {
-                                    	logger.error('Could not unlink file:' + path + ', where error: ',err);
+                            	fs.unlink(path, function (er) { 
+                                    if(er) {
+                                    	logger.error('Could not unlink file:' + path + ', where error: ',er);
                                     }
                                 });
                             }
@@ -620,7 +621,7 @@ var handler = function (req, res) {
 
 					// handle gateway request body (when present)
                     req.on('data', function (chunk) {
-                        logger.trace('Writing to server, where chunk length:', chunk.length);
+                        logger.trace(req.transactionId+'-Writing to server, where chunk length:', chunk.length);
                     	//logger.trace('Data: ' + chunk.toString('utf8'));
 
                         // first time - initialize and perform unstructured audit logging of the gateway request body file if config set
@@ -666,8 +667,7 @@ var handler = function (req, res) {
                     req.socket.setTimeout(config.server.timeout);
                     req.socket.removeAllListeners('timeout'); 
                     req.socket.on('timeout', function () {
-                		logger.info('The gateway request.socket experienced a timeout from the caller.');
-                        // if streaming to client has started, the writeHead will have no effect.    
+                		logger.info(req.transactionId+'-The gateway request.socket experienced a timeout from the caller.');
                 		logger.trace('Returning 504/Gateway Timeout gateway response'); 
                 		res.writeHead(504, 'Gateway Timeout');
                 		res.end('The gateway request.socket experienced a timeout from the caller.');
@@ -676,8 +676,8 @@ var handler = function (req, res) {
                     });
                    
                     // handle error experienced when processing gateway request body (when present)
-                    req.on('error', function (e) {
-                        logger.error('Problem with gateway request, request error event emitted: ', e);
+                    req.on('error', function (err) {
+                        logger.error(req.transactionId+'-Problem with gateway request, request error event emitted: ', err);
                         // stop unstructured audit logging of gateway request body if happening
                         if (isReqAuditInitialized && !_.isUndefined(requestAttachmentAudit)) {
                             var endAttachmentText = getEndAttachment(req.key);
@@ -687,7 +687,7 @@ var handler = function (req, res) {
                         // stop the proxy_client
                         proxy_client.end();
                         // return an error gateway response
-                        logger.trace('Returning 500/Internal Server Error gateway response, due to gateway request data processing error Event');
+                        logger.trace(req.transactionId+'-Returning 500/Internal Server Error gateway response, due to gateway request data processing error Event');
                         res.writeHead(500, 'Internal Server Error', {
                             'Content-Type' : 'text/plain'
                         });
@@ -701,7 +701,7 @@ var handler = function (req, res) {
         }
         // handle 'no matching configured route found' case
         if (i === config.routes.length) {
-			logger.trace('No matching configured route found for gateway request path!: Returning 404/Not Found gateway response');
+			logger.trace(req.transactionId+'-No matching configured route found for gateway request path!: Returning 404/Not Found gateway response');
             res.writeHead(404, 'Not Found', {
                 'Content-Type' : 'text/plain'
             });
@@ -713,7 +713,7 @@ var handler = function (req, res) {
         var pongResponse = 'PONG!' + '\nVA VLER Gateway received \'/ping\' request headers:\n' + JSON.stringify(req.headers, true, 2) + '\n';
         //+ '\nGateway response time: '+ res +' ms\n';
         var resLength = pongResponse.length;
-        logger.trace('Returning 200 PONG gateway response, with body: ',pongResponse);
+        logger.trace(req.transactionId+'-Returning 200 PONG gateway response, with body: ',pongResponse);
         res.writeHead(200, {
             'Content-Type': 'text/plain',
             'Content-Length': resLength
@@ -723,7 +723,7 @@ var handler = function (req, res) {
         return;
     } else {
 		// return a 404 response to a "no path" request
-    	logger.trace('Returning 404/Not Found gateway response, due to receipt of unrecognized type of gateway request');
+    	logger.trace(req.transactionId+'-Returning 404/Not Found gateway response, due to receipt of unrecognized type of gateway request');
         res.writeHead(404, 'Not Found');
         res.end('HTTP 1.1 404/Not Found');
         return;
@@ -913,8 +913,7 @@ if (cluster.isMaster) {
     });
 	logger.trace('httpServer timeout set at: '+config.server.timeout+' ms.'); 
 	httpServer.on('connection', function (socket) {
-		logger.trace('httpServer received a connection event!'); 
-		
+		logger.trace('httpServer received a connection event!'); 		
 	 });	
     httpServer.listen(config.server.port, config.server.host, function () {
        logger.info("Gateway listening on Port: ", config.server.port, " Host: ", config.server.host);
@@ -952,7 +951,7 @@ function audit(options, req, res, proxyRes, reqDateTime, resDateTime, err, callb
 
     var audit = {};
     audit.transactionId = req.transactionId;
-    audit.req = {}
+    audit.req = {};
     audit.req.url = req.url;
     audit.req.parsedUrl = req.parsedUrl;
     audit.req.headers = req.headers;
@@ -964,11 +963,13 @@ function audit(options, req, res, proxyRes, reqDateTime, resDateTime, err, callb
     audit.req.datetime = reqDateTime;
 
     audit.res = {};
-    if(!res.headers) {
+    audit.res.headers = res.headers;
+    if(!audit.res.headers) {
     	audit.res.headers = res._headers;
-    } else {
-    	audit.res.headers = res.headers;
-    }    
+    } 
+    if(!audit.res.headers) {
+    	audit.res.headers = res._header;
+    }
     audit.res.statusCode = res.statusCode;
     audit.res.key = res.key;
     audit.res.datetime = resDateTime;

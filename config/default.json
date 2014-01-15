@@ -12,8 +12,8 @@
             "https" : {
                 "key" : "config/das.dynalias.org_privatekey.pem",
                 "cert" : "config/das.dynalias.org_cert.pem",
-                "requestCert" : true,
-                "rejectUnauthorized" : true,
+                "requestCert" : false,
+                "rejectUnauthorized" : false,
                 "agent" : false,
                 "ca" : ["config/das.dynalias.org_cert.pem"],
                 "passphrase" : "test123"

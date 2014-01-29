@@ -95,7 +95,9 @@
                     "port" : "3001",
                     "xforward" : true,
                     "changeOrgin" : false,
-                    "timeout" : 12000,
+                    "timeout" : 1200000,
+                    "buffer" : false,
+                    "strictLength" : false,                    
                     "audit" : {
                         "structured" : {
                             "options" : {

@@ -279,16 +279,20 @@ var handler = function (req, res) {
 	if((config.useClientCertAuth || config.useHMACAuth) && authErr) {	
 		// output authorization error gateway response
 	    logger.trace(req.transactionId+'-Authentication failed:',authErr.message+', returning statusCode='+authErr.status+' error gateway response');
-        res.writeHead(authErr.status, {
-            'Content-Type' : 'text/plain'
-        });
+        var resBodyTxt = '';
         if(authErr.status=="500") {
-        	res.end('HTTP 1.1 500/Internal Server Error');
+        	resBodyTxt ='HTTP 1.1 500/Internal Server Error';
         } else if(authErr.status=="403") {
-        	res.end('HTTP 1.1 403/Forbidden');
+        	resBodyTxt = 'HTTP 1.1 403/Forbidden';
         } else {
-        	res.end('HTTP 1.1 401/Not Authorized');
+        	resBodyTxt = 'HTTP 1.1 401/Not Authorized';
         }
+        var resLength = resBodyTxt.length;
+        res.writeHead(authErr.status, {
+            'Content-Type' : 'text/plain',
+            'Content-Length': resLength
+        });
+        res.end(resBodyTxt);
         return;		
 	}
 
@@ -318,7 +322,99 @@ var handler = function (req, res) {
                         throw new Error(req.transactionId+"-Route's \'options\' object has to be defined in configuration file!");
                     }
                     
-                    // handle load-balancing if needed
+                    // I. handle the gateway request received
+                    
+                    var isReqAuditInitialized = false;
+                    var requestAttachmentAudit;
+                    
+                    // set the socket timeout value and listener to be the same as the server timeout, 
+                    // for timeout after request assigned to socket (i.e. no data activity)
+                    req.socket.setTimeout(config.server.timeout);                    
+                    // set the server socket time-out event handler
+                    req.socket.removeAllListeners('timeout');                    
+                    req.socket.on('timeout', function () {
+                		logger.info(req.transactionId+'-The gateway request.socket experienced a time-out from the caller.');
+                		logger.trace('Returning 504/Gateway Timeout gateway response...'); 
+                		var resBodyTxt = 'The gateway request.socket experienced a time-out from the caller. HTTP 1.1 504/Gateway Timeout';
+            			var resLength = resBodyTxt.length;
+                		res.writeHead(504, 'Gateway Timeout', {
+                            'Content-Type' : 'text/plain',
+                            'Content-Length' : resLength
+                        });
+                		res.end(resBodyTxt);
+                		resDateTime = moment().format();
+                		req.socket.destroy();
+                    });
+
+					// handle gateway request body (when present)
+                    req.on('data', function (chunk) {
+                        logger.trace(req.transactionId+'-Writing to server, where chunk length:', chunk.length);
+                    	//logger.trace('Data: ' + chunk.toString('utf8'));
+
+                        // first time - initialize and perform unstructured audit logging of the gateway request body file if config set
+                        if (!isReqAuditInitialized && route.audit && route.audit.unstructured && route.audit.unstructured.auditRequest) {
+                            var key = req.transactionId + '-REQ';
+                            req.key = key;
+                            var type = getContentType(req);
+                            var ext = getExtension(type);
+                            logger.trace("Auditing with transaction id: ", key);  
+                            // initialize and write the first text
+                            logger.trace("Initializing audit: ");       
+                            requestAttachmentAudit = initializeAudit(key, route.audit.unstructured.options);
+                            var beforeAttachmentText = getBeforeAttachment(key, key + '.' + ext, type);
+                            logger.trace("Writing before attachment text");//: ", beforeAttachmentText);  
+                            requestAttachmentAudit.write(beforeAttachmentText, 'binary');
+                            isReqAuditInitialized = true;
+                        }
+                        // continue the current unstructured audit logging of the gateway request body file (if initialized)
+                        if (!_.isUndefined(requestAttachmentAudit)) {
+                            logger.trace("Writing audit chunk"); 
+                            requestAttachmentAudit.write(chunk, 'binary');
+                        }
+                        // write the next chunk of the binary stream of the gateway request body file received to the proxy client
+                        //logger.trace("Writing proxy client chunk: ", chunk);
+                        proxy_client.write(chunk, 'binary');
+                    });
+
+					// end handling gateway request body (when present)
+                    req.on('end', function () {
+                    	// stop unstructured audit logging of gateway request body if happening (if initialized)
+                        if (isReqAuditInitialized && !_.isUndefined(requestAttachmentAudit)) {
+                            var endAttachmentText = getEndAttachment(req.key);
+                            logger.trace('End chunk write to audit');//: ', endAttachmentText); 
+                            requestAttachmentAudit.end(endAttachmentText);
+                        }
+                        logger.trace('End chunk write to server'); 
+                        // stop the proxy_client
+                        proxy_client.end();
+                    });                    
+                   
+                    // handle error experienced when processing gateway request body (when present)
+                    req.on('error', function (err) {
+                        logger.error(req.transactionId+'-Problem with gateway request, request error event emitted: ', err, err.stack);
+                        // stop unstructured audit logging of gateway request body if happening
+                        if (isReqAuditInitialized && !_.isUndefined(requestAttachmentAudit)) {
+                            var endAttachmentText = getEndAttachment(req.key);
+                            logger.trace('End chunk write to audit');//: ', endAttachmentText);
+                            requestAttachmentAudit.end(endAttachmentText);
+                        }
+                        // stop the proxy_client
+                        proxy_client.end();
+                        // return an error gateway response
+                        logger.trace(req.transactionId+'-Returning 500/Internal Server Error gateway response, due to gateway request data processing error Event');
+                        var resBodyTxt = 'HTTP 1.1 500/Internal Server Error';
+            			var resLength = resBodyTxt.length;
+                        res.writeHead(500, 'Internal Server Error', {
+                            'Content-Type' : 'text/plain',
+                            'Content-Length' : resLength
+                        });
+                        res.end(resBodyTxt);  
+                        resDateTime = moment().format();
+                    });         
+                    
+                    // II. make the gateway proxy request
+                    
+                    // handle load-balancing to multiple route endpoints if needed
                     var route;
                     if(config.routes[i].options.length > 0) {
                     	// have more than one hostname, port route configured for this route path - do round-robin load-balancing 
@@ -369,10 +465,13 @@ var handler = function (req, res) {
                             proxy_client.setTimeout(route.timeout, function () {
 								// Note: if streaming to client has started, this writeHead call will have no effect.
                             	logger.error(req.transactionId+'-Gateway experienced a proxy request time-out event to route: '+route.host+':'+route.port+''+req.parsedUrl.path+', returning 504/Gateway Timeout gateway response');                            	  
-                                res.writeHead(504, 'Gateway Timeout',{
-                                    'Content-Type' : 'text/plain'
+                            	var resBodyTxt = 'HTTP 1.1 504/Gateway Timeout';
+                            	var resLength = resBodyTxt.length;
+                            	res.writeHead(504, 'Gateway Timeout',{
+                                    'Content-Type' : 'text/plain',
+                                    'Content-Length' : resLength
                                 });
-                                res.end('HTTP 1.1 504/Gateway Timeout');
+                                res.end(resBodyTxt);
                                 socket.destroy();                                
                             });
                         }
@@ -389,28 +488,41 @@ var handler = function (req, res) {
                     		// assume response was already sent elsewhere, e.g. Gateway Timeout
                     		logger.trace(req.transactionId+'-error event: but already returned a gateway response');                        
                     	} else {
-                    		logger.error(req.transactionId+'-Proxy client request error event emitted!, where error: '+err.stack);
+                    		logger.error(req.transactionId+'-Proxy client request error event emitted!, where error: ', err, err.stack);
                     		if (S(err.message).contains('ECONNREFUSED')) {
-                    			// return 503 Service Unavailable, since proxy client is most likely unable to connect to route's host                    			
+                    			// return 503 Service Unavailable, since proxy client is most likely unable to connect to route's host 
+                    			var resBodyTxt = 'There was a communication error with upstream server. HTTP 1.1 503/Service Unavailable';
+                    			var resLength = resBodyTxt.length;
                     			res.writeHead(503, 'Service Unavailable',{
-                                    'Content-Type' : 'text/plain'
-                                });
-	                    		res.write('There was a communication error with upstream server.');
-	                    		res.end('HTTP 1.1 503/Service Unavailable');                 		
+                                    'Content-Type' : 'text/plain',
+                                    'Content-Length' : resLength
+                                });                    			
+	                    		res.write(resBodyTxt);
+	                    		res.end();                 		
                     		} else { 
-	                        	// return default error gateway response                     		
+	                        	// return default error gateway response     
+                    			var resBodyTxt = 'There was a communication error with upstream server. HTTP 1.1 500/Service Unavailable';
+                    			var resLength = resBodyTxt.length;
 	                    		res.writeHead(500, 'Internal Server Error', {
-	                                'Content-Type' : 'text/plain'
+	                                'Content-Type' : 'text/plain',
+                                    'Content-Length' : resLength
 	                            });
-	                    		res.write('There was a communication error with upstream server.');
-	                    		res.end('HTTP 1.1 500/Internal Server Error');
+	                    		res.write(resBodyTxt);
+	                    		res.end();
                     		}
                     		resDateTime = moment().format();
                     	}
                         // audit the gateway response to the proxy request error:
                     	// perform gateway request, gateway response, proxy error response structured audit logging if config set
                         if (route.audit && route.audit.structured && route.audit.structured.auditRequestResponse) {
-                        	logger.trace('Auditing gateway request and response (and proxy client\'s request error)','res.statusCode:',res.statusCode,'res.headers:',res.headers);
+                        	var resHeadersObj = res.headers;
+                        	if(!resHeadersObj) {
+                        		resHeadersObj = res._headers;
+                            }                         	
+                            if(!resHeadersObj) {                            	
+                            	resHeadersObj = res._header;
+                            }
+                        	logger.trace('Auditing gateway request and response (and proxy client\'s request error)','res.statusCode:',res.statusCode,'res.headers:',resHeadersObj);
                             audit(route.audit.structured.options, req, res, '', reqDateTime, resDateTime, err, function(auditRes) {});
                         }
                         // if file buffering set for this configured route                                         
@@ -420,7 +532,7 @@ var handler = function (req, res) {
                         		if (exists) {
                         			fs.unlink(path, function (er) { 
                                     	if(er) {
-                                    		logger.error('Could not unlink file:' + path + ", where error: ",er);
+                                    		logger.error('Could not unlink file:' + path + ", where error: ",er, er.stack);
                                     	}
                                     });
                         		}                        		  
@@ -430,8 +542,10 @@ var handler = function (req, res) {
 
                     logger.trace(req.transactionId+"-Initiating proxy request with options: \n", util.inspect(options)); 
 
-					// define the proxy_client's response-handler callback method
-                    // Note: proxyRes is an instance of type http.IncomingMessage
+                    // III. handle the gateway proxy response (called in http.request and https.request for proxy_client request in II. above)
+                    
+					// define the gateway proxy_client's response-handler callback method
+                    // Note: proxyRes parameter is an instance of type http.IncomingMessage
                     function processRes(proxyRes) {
 						logger.trace(req.transactionId+'-Handling proxy response received, for proxy request sent with options: ', options); 
                     	
@@ -487,7 +601,7 @@ var handler = function (req, res) {
                             }
                             // continue the current unstructured audit logging of the proxy response body file 
                             if (!_.isUndefined(responseAttachmentAudit)) {
-                                logger.trace("Writing audit chunk: ");  
+                                logger.trace("Writing audit chunk... ");  
                                 responseAttachmentAudit.write(chunk, 'binary');
                             }                             
                             // keep track of the actual file size in bytes received for both 
@@ -537,10 +651,13 @@ var handler = function (req, res) {
                                 if (fileSize != uploadedSize) {
                                 	// return an error gateway response, set errState to true
                                 	logger.error('HTTP Header Content-Length does not match received file size, Content-Length:' + fileSize + ' bytes; Uploaded Size: ' + uploadedSize + ' bytes');
+                                	var resBodyTxt = 'HTTP 1.1 500/Internal Server Error: HTTP Header Content-Length value does not match received file size.';
+                        			var resLength = resBodyTxt.length;
                                     res.writeHead(500, 'HTTP Header Content-Length does not match received file size, Content-Length:' + fileSize + ' bytes; Uploaded Size: ' + uploadedSize + ' bytes', {
-                                        'Content-Type' : 'text/plain'
+                                        'Content-Type' : 'text/plain',
+                                        'Content-Length' : resLength
                                     });
-                                    res.end('HTTP 1.1 500/Internal Server Error: HTTP Header Content-Length value does not match received file size.');
+                                    res.end(resBodyTxt);
                                     resDateTime = moment().format();
                                     errState = true;
                                 }
@@ -557,7 +674,7 @@ var handler = function (req, res) {
                                 // release the tmp file in the tmp directory
                                 fs.unlink(path, function (err) { 
                                     if(err) {
-                                    	logger.error('Could not unlink file:' + path + ", where error: ",err);
+                                    	logger.error('Could not unlink file:' + path + ", where error: ",err, err.stack);
                                     }
                                 });
                             } else { // no file buffering
@@ -577,12 +694,15 @@ var handler = function (req, res) {
 
 						// handle error experienced when processing proxy client response body (when present)
                         proxyRes.on('error', function (err) {
-                            logger.error(req.transactionId+'-Error emitted from proxy client response processing, where error: ', err);
+                            logger.error(req.transactionId+'-Error emitted from proxy client response processing, where error: ', err, err.stack);
 							logger.trace(req.transactionId+'-Returning 500/Internal Server Error gateway response due to proxy client response processing error');
+							var resBodyTxt = 'HTTP 1.1 500/Internal Server Error';
+                			var resLength = resBodyTxt.length;
 							res.writeHead(500, 'Internal Server Error', {
-                                'Content-Type' : 'text/plain'
+                                'Content-Type' : 'text/plain',
+                                'Content-Length' : resLength
                             });
-                            res.end('HTTP 1.1 500/Internal Server Error');
+                            res.end(resBodyTxt);
                             resDateTime = moment().format();
                             // stop unstructured audit logging of proxy response attachment received if occurring 
                             if (isResAuditInitialized && !_.isUndefined(responseAttachmentAudit)) {
@@ -601,7 +721,7 @@ var handler = function (req, res) {
                             	// release the tmp file in the tmp directory
                             	fs.unlink(path, function (er) { 
                                     if(er) {
-                                    	logger.error('Could not unlink file:' + path + ', where error: ',er);
+                                    	logger.error('Could not unlink file:' + path + ', where error: ',er, er.stack);
                                     }
                                 });
                             }
@@ -614,86 +734,8 @@ var handler = function (req, res) {
                         	// write the gateway response headers using the proxy response headers
                             res.writeHead(proxyRes.statusCode, proxyRes.headers);
                         }
-                    }
-
-                    var isReqAuditInitialized = false;
-                    var requestAttachmentAudit;
-
-					// handle gateway request body (when present)
-                    req.on('data', function (chunk) {
-                        logger.trace(req.transactionId+'-Writing to server, where chunk length:', chunk.length);
-                    	//logger.trace('Data: ' + chunk.toString('utf8'));
-
-                        // first time - initialize and perform unstructured audit logging of the gateway request body file if config set
-                        if (!isReqAuditInitialized && route.audit && route.audit.unstructured && route.audit.unstructured.auditRequest) {
-                            var key = req.transactionId + '-REQ';
-                            req.key = key;
-                            var type = getContentType(req);
-                            var ext = getExtension(type);
-                            logger.trace("Auditing with transaction id: ", key);  
-                            // initialize and write the first text
-                            logger.trace("Initializing audit: ");       
-                            requestAttachmentAudit = initializeAudit(key, route.audit.unstructured.options);
-                            var beforeAttachmentText = getBeforeAttachment(key, key + '.' + ext, type);
-                            logger.trace("Writing before attachment text");//: ", beforeAttachmentText);  
-                            requestAttachmentAudit.write(beforeAttachmentText, 'binary');
-                            isReqAuditInitialized = true;
-                        }
-                        // continue the current unstructured audit logging of the gateway request body file (if initialized)
-                        if (!_.isUndefined(requestAttachmentAudit)) {
-                            logger.trace("Writing audit chunk"); 
-                            requestAttachmentAudit.write(chunk, 'binary');
-                        }
-                        // write the next chunk of the binary stream of the gateway request body file received to the proxy client
-                        //logger.trace("Writing proxy client chunk: ", chunk);
-                        proxy_client.write(chunk, 'binary');
-                    });
-
-					// end handling gateway request body (when present)
-                    req.on('end', function () {
-                    	// stop unstructured audit logging of gateway request body if happening (if initialized)
-                        if (isReqAuditInitialized && !_.isUndefined(requestAttachmentAudit)) {
-                            var endAttachmentText = getEndAttachment(req.key);
-                            logger.trace('End chunk write to audit');//: ', endAttachmentText); 
-                            requestAttachmentAudit.end(endAttachmentText);
-                        }
-                        logger.trace('End chunk write to server'); 
-                        // stop the proxy_client
-                        proxy_client.end();
-                    });
+                    }  
                     
-                    // set the socket timeout value and listener to be the same as the server timeout, 
-                    // for timeout after request assigned to socket (i.e. no data activity)
-                    req.socket.setTimeout(config.server.timeout);
-                    req.socket.removeAllListeners('timeout'); 
-                    req.socket.on('timeout', function () {
-                		logger.info(req.transactionId+'-The gateway request.socket experienced a timeout from the caller.');
-                		logger.trace('Returning 504/Gateway Timeout gateway response'); 
-                		res.writeHead(504, 'Gateway Timeout');
-                		res.end('The gateway request.socket experienced a timeout from the caller.');
-                		resDateTime = moment().format();
-                		req.socket.destroy();
-                    });
-                   
-                    // handle error experienced when processing gateway request body (when present)
-                    req.on('error', function (err) {
-                        logger.error(req.transactionId+'-Problem with gateway request, request error event emitted: ', err);
-                        // stop unstructured audit logging of gateway request body if happening
-                        if (isReqAuditInitialized && !_.isUndefined(requestAttachmentAudit)) {
-                            var endAttachmentText = getEndAttachment(req.key);
-                            logger.trace('End chunk write to audit');//: ', endAttachmentText);
-                            requestAttachmentAudit.end(endAttachmentText);
-                        }
-                        // stop the proxy_client
-                        proxy_client.end();
-                        // return an error gateway response
-                        logger.trace(req.transactionId+'-Returning 500/Internal Server Error gateway response, due to gateway request data processing error Event');
-                        res.writeHead(500, 'Internal Server Error', {
-                            'Content-Type' : 'text/plain'
-                        });
-                        res.end('HTTP 1.1 500/Internal Server Error');  
-                        resDateTime = moment().format();
-                    });
                     // have matched the request path to a configured route, so exit the 'for' loop
                     break;
                 }
@@ -702,10 +744,13 @@ var handler = function (req, res) {
         // handle 'no matching configured route found' case
         if (i === config.routes.length) {
 			logger.trace(req.transactionId+'-No matching configured route found for gateway request path!: Returning 404/Not Found gateway response');
+			var resBodyTxt = 'HTTP 1.1 404/Not Found';
+			var resLength = resBodyTxt.length;
             res.writeHead(404, 'Not Found', {
-                'Content-Type' : 'text/plain'
+                'Content-Type' : 'text/plain',
+                'Content-Length' : resLength
             });
-            res.end('HTTP 1.1 404/Not Found');
+            res.end(resBodyTxt);
             return;
         } 
     } else if (S(req.parsedUrl.path).contains('ping') || S(req.parsedUrl.path).contains('PING')) {
@@ -724,8 +769,13 @@ var handler = function (req, res) {
     } else {
 		// return a 404 response to a "no path" request
     	logger.trace(req.transactionId+'-Returning 404/Not Found gateway response, due to receipt of unrecognized type of gateway request');
-        res.writeHead(404, 'Not Found');
-        res.end('HTTP 1.1 404/Not Found');
+    	var resBodyTxt = 'HTTP 1.1 404/Not Found';
+		var resLength = resBodyTxt.length;
+    	res.writeHead(404, 'Not Found', {
+            'Content-Type' : 'text/plain',
+            'Content-Length' : resLength
+        });
+        res.end(resBodyTxt);
         return;
     }
 };
@@ -924,7 +974,7 @@ if (cluster.isMaster) {
 function audit(options, req, res, proxyRes, reqDateTime, resDateTime, err, callback) {
     var auditService = http.request(options, function(auditRes) {
         auditRes.on('data', function(chunk) {
-            logger.trace('Write to audit client, with chunk length: ', chunk.length);
+            logger.trace('Writing to audit client, with chunk length: ', chunk.length);
         });
 
         auditRes.on('end', function(data) {
@@ -932,8 +982,17 @@ function audit(options, req, res, proxyRes, reqDateTime, resDateTime, err, callb
         });
 
         auditRes.on('error', function(e) {
-            logger.error('Error with audit, where error: ', e);
+            logger.error('Error with audit, where error: ', e, e.stack);
         });
+    });
+    
+    // explicitly throw an descriptive error to be logged if auditService has an Error event, e.g. can't connect to eCRUD Audit Service endpoint
+    auditService.on('error', function (err) {    	
+		if (S(err.message).contains('ECONNREFUSED')) {			
+			throw new Error('auditService Error: Gateway internal auditService experienced an error Event connecting to eCRUD Audit Service endpoint, where error: '+err);
+		} else {			
+			throw new Error('auditService Error: : Gateway internal auditService experienced an unexpected error Event, where error: '+err);
+		}		
     });
         
     req = req ? req : {};

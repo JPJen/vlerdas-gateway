@@ -864,11 +864,14 @@ app.use(connect.logger({stream:winstonStream, format:'"To Remote-Addr:" :remote-
 // set the 'handler' function
 app.use(handler);
 
+// set the number of desired worker threads
+var clusterSize = !_.isUndefined(config.clusterSize) && _.isNumber(config.clusterSize) ? config.clusterSize : numCPUs;
+
 // set up the cluster, server, begin listening for gateway requests 
-if (cluster.isMaster) {
+if (clusterSize > 1 && cluster.isMaster) {
 	// this is the cluster master, so perform clustering initialization:
     // fork cluster workers
-    for (var i = 0; i < numCPUs; i++) {
+    for (var i = 0; i < clusterSize; i++) {
         cluster.fork();
     }
     cluster.on('fork', function(worker) {

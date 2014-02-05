@@ -679,8 +679,7 @@ var handler = function (req, res) {
                     // set the server socket time-out event handler
                     req.socket.removeAllListeners('timeout');                    
                     req.socket.on('timeout', function () {
-                		logger.error(req.transactionId+'-The gateway request.socket experienced a time-out from the caller.');
-                		
+                		logger.error(req.transactionId+'-The gateway request.socket experienced a time-out from the caller.');                		
                 		logger.trace(req.transactionId+'-Returning 504/Gateway Timeout gateway response...'); 
                 		var resBodyTxt = 'The gateway request.socket experienced a time-out from the caller. HTTP 1.1 504/Gateway Timeout';
             			var resLength = resBodyTxt.length;
@@ -966,27 +965,30 @@ app.use(connect.logger({stream:winstonStream, format:'"To Remote-Addr:" :remote-
 // set the 'handler' function
 app.use(handler);
 
+// set number of worker processes either from default numCPUs or from 'clusterSize' in config
+var clusterSize = !_.isUndefined(config.clusterSize) && _.isNumber(config.clusterSize) ? config.clusterSize : numCPUs;
+
 // set up the cluster, server, begin listening for gateway requests 
-if (cluster.isMaster) {
+if (clusterSize > 1 && cluster.isMaster) {
 	// this is the cluster master, so perform clustering initialization:
     // fork cluster workers
-    for (var i = 0; i < numCPUs; i++) {
+    for (var i = 0; i < clusterSize; i++) {
         cluster.fork();
     }
     cluster.on('fork', function(worker) {
-    	logger.info('A worker was forked with #: ' + worker.id);    
+    	logger.info('A worker was forked with worker #: ' + worker.id + ' with process pid #: ' + worker.process.pid);    
     });
  //   cluster.on('online', function (worker) {       
  //       logger.info('A worker is now running with #: ' + worker.id);        
  //   });
     cluster.on('listening', function (worker, address) {        
-    	logger.info('A worker #: '+worker.id+' with process pid #: '+worker.process.pid+' is now listening on/connected to: ' + address.address + ':' + address.port);        
+    	logger.info('A worker #: ' + worker.id + ' with process pid #: ' + worker.process.pid + ' is now listening on/connected to: ' + address.address + ':' + address.port);        
     });
     cluster.on('disconnect', function (worker) {        
-    	logger.info('A worker #: '+worker.id+' is now disconnected');        
+    	logger.info('A worker #: ' + worker.id + ' with process pid #: ' + worker.process.pid + ' is now disconnected');        
     });
     cluster.on('exit', function (worker, code, signal) {
-    	logger.info('worker #: '+ worker.id +' with process pid #: ' + worker.process.pid + ' died');        
+    	logger.info('Worker #: ' + worker.id + ' with process pid #: ' + worker.process.pid + ' died');        
     });
 } else {
 	// this is a cluster worker, so initialize http/https server instance(s) 
@@ -1112,22 +1114,22 @@ function audit(options, req, res, proxyRes, reqDateTime, resDateTime, err, callb
 
 // define default exception handler event
 process.on('uncaughtException', function (err) {
-    logger.error('Caught exception: ' + err.stack);
+    logger.error('Process pid #'+ process.pid +' Caught exception: ' + err.stack);
     process.exit(1);
 });
 
 // define process Ctrl-C Shutdown event
 process.on('SIGINT', function () {
-	logger.info('Shutting down from SIGINT (Crtl-C)');
+	logger.info('Process pid #'+ process.pid +' Shutting down from SIGINT (Crtl-C)');
     process.exit();
 });
 
 // define process exit event
 process.on('exit', function (err) {
     if (err) {
-    	logger.error('Exiting with error... Error: ', err);
+    	logger.error('Process pid #'+ process.pid +' Exiting with error, where error: ', err);
     } else {
-        logger.info('Exiting...');
+        logger.info('Process pid #'+ process.pid +' Exiting...');
     }
 });
 

@@ -1,13 +1,14 @@
 {
+	"clusterSize" : 12,
     "server" : {
         "port" : 80,
         "host" : "localhost",
-        "timeout" : 1200000
+        "timeout" : 285000
     },
     "secureServer" : {
         "port" : 443,
         "host" : "127.0.0.1",
-        "timeout" : 1200000,
+        "timeout" : 285000,
         "options" : {
             "https" : {
                 "key" : "config/das.dynalias.org_privatekey.pem",
@@ -50,7 +51,7 @@
         "headerPrefix" : "Amz",
         "hash" : "sha1",
         "serviceLabel" : "VLER",
-        "debug" : true
+        "debug" : false
     },
     "routes" :
     [{
@@ -61,7 +62,9 @@
                     "port" : "4001",
                     "xforward" : true,
                     "changeOrgin" : false,
-                    "timeout" : 12000,
+                    "timeout" : 285000,
+                    "buffer" : false,
+                    "strictLength" : false,   
                     "audit" : {
                         "structured" : {
                             "options" : {
@@ -71,7 +74,8 @@
                                 "method" : "POST",
                                 "headers" : {
                                     "Content-Type" : "application/json"
-                                }
+                                },
+                                "timeout" : 300000
                             },                            
                             "auditRequestResponse" : true
                         },
@@ -80,7 +84,8 @@
                                 "hostname" : "localhost",
                                 "port" : 3003,
                                 "path" : "/ecrud/v1/audit/fs",
-                                "method" : "POST"
+                                "method" : "POST",
+                                "timeout" : 300000
                             },
                             "auditRequest" : true,
                             "auditResponse" : true
@@ -95,7 +100,9 @@
                     "port" : "3001",
                     "xforward" : true,
                     "changeOrgin" : false,
-                    "timeout" : 12000,
+                    "timeout" : 285000,
+                    "buffer" : false,
+                    "strictLength" : false,                    
                     "audit" : {
                         "structured" : {
                             "options" : {
@@ -105,7 +112,8 @@
                                 "method" : "POST",
                                 "headers" : {
                                     "Content-Type" : "application/json"
-                                }
+                                },
+                                "timeout" : 300000
                             },
                             "auditRequestResponse" : true
                         },
@@ -114,7 +122,8 @@
                                 "hostname" : "localhost",
                                 "port" : 3003,
                                 "path" : "/ecrud/v1/audit/fs",
-                                "method" : "POST"
+                                "method" : "POST",
+                                "timeout" : 300000
                             },
                             "auditRequest" : true,
                             "auditResponse" : true
@@ -146,14 +155,14 @@
 	},
     "log" : {
         "console" : {
-            "level" : "trace",
+            "level" : "info",
             "colorize" : true,
             "label" : "NJSGATEWAY",
             "timestamp" : true,
             "silent" : false            
         },
         "file" : {
-            "level" : "trace",
+            "level" : "info",
             "colorize" : true,
             "label" : "NJSGATEWAY",
             "timestamp" : true,
@@ -161,7 +170,7 @@
             "filename" : "gateway.log",
             "maxSize" : "52428800",
             "maxFiles" : "10",
-            "json" : true            
+            "json" : false            
         }
     },
     "debug" : true

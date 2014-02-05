@@ -679,15 +679,21 @@ var handler = function (req, res) {
                     // set the server socket time-out event handler
                     req.socket.removeAllListeners('timeout');                    
                     req.socket.on('timeout', function () {
-                		logger.error(req.transactionId+'-The gateway request.socket experienced a time-out from the caller.');                		
-                		logger.trace(req.transactionId+'-Returning 504/Gateway Timeout gateway response...'); 
-                		var resBodyTxt = 'The gateway request.socket experienced a time-out from the caller. HTTP 1.1 504/Gateway Timeout';
-            			var resLength = resBodyTxt.length;
-                		res.writeHead(504, 'Gateway Timeout', {
-                            'Content-Type' : 'text/plain',
-                            'Content-Length' : resLength
-                        });
-                		res.end(resBodyTxt);
+                    	if (res.headersSent) {
+                    		// don't return a response, since it will thrown an exception if response is already in 'finished' state 
+                    		// - probably because request socket wasn't released properly by service
+                    		logger.error(req.transactionId+'-Gateway request.socket experienced a time-out from the caller, no response returned, since response was already returned'); 
+                    	} else {
+	                		logger.error(req.transactionId+'-Gateway request.socket experienced a time-out from the caller.');                		
+	                		logger.trace(req.transactionId+'-Returning 504/Gateway Timeout gateway response...'); 
+	                		var resBodyTxt = 'The gateway request.socket experienced a time-out from the caller. HTTP 1.1 504/Gateway Timeout';
+	            			var resLength = resBodyTxt.length;
+	                		res.writeHead(504, 'Gateway Timeout', {
+	                            'Content-Type' : 'text/plain',
+	                            'Content-Length' : resLength
+	                        });
+	                		res.end(resBodyTxt);
+                    	}
                 		resDateTime = moment().format();
                 		req.socket.destroy();
                     });
@@ -745,16 +751,22 @@ var handler = function (req, res) {
                             requestAttachmentAudit.end(endAttachmentText);
                         }
                         // stop the proxy_client
-                        proxy_client.end();
-                        // return an error gateway response
-                        logger.trace(req.transactionId+'-Returning 500/Internal Server Error gateway response, due to gateway request data processing error event');
-                        var resBodyTxt = 'HTTP 1.1 500/Internal Server Error';
-            			var resLength = resBodyTxt.length;
-                        res.writeHead(500, 'Internal Server Error', {
-                            'Content-Type' : 'text/plain',
-                            'Content-Length' : resLength
-                        });
-                        res.end(resBodyTxt);  
+                        proxy_client.end();                        
+                        if (res.headersSent) {
+                    		// don't return a response, since it will thrown an exception if response is already in 'finished' state 
+                    		// - probably because request socket wasn't released properly by service
+                    		logger.error(req.transactionId+'-...no response returned, since response was already returned'); 
+                    	} else {
+	                        // return an error gateway response
+	                        logger.trace(req.transactionId+'-Returning 500/Internal Server Error gateway response, due to gateway request data processing error event');
+	                        var resBodyTxt = 'HTTP 1.1 500/Internal Server Error';
+	            			var resLength = resBodyTxt.length;
+	                        res.writeHead(500, 'Internal Server Error', {
+	                            'Content-Type' : 'text/plain',
+	                            'Content-Length' : resLength
+	                        });
+	                        res.end(resBodyTxt); 
+                    	}
                         resDateTime = moment().format();
                     });  
 

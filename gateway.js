@@ -674,7 +674,9 @@ var handler = function (req, res) {
                         } else { // no file buffering
                         	// write the gateway response headers using the proxy response headers
                         	logger.trace(req.transactionId+'-Writing gateway response (no-response-file-buffering) headers...');
-                            res.writeHead(proxy_Res.statusCode, proxy_Res.headers);
+                        	if (!res.headersSent) {
+                        		res.writeHead(proxy_Res.statusCode, proxy_Res.headers);
+                        	}
                         }
                     }				   
                         
